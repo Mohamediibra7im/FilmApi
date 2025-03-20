@@ -4,6 +4,7 @@ FilmApi is a simple API designed to manage and retrieve information about films.
 
 ## Features
 
+
 - Add new films with details like title, director, release year, and genre.
 - Retrieve a list of all films or search for specific films.
 - Update film information.
