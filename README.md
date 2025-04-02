@@ -1,6 +1,5 @@
 # FilmApi
-
-FilmApi is a robust and user-friendly API designed to manage and retrieve information about films. It offers a comprehensive set of endpoints for creating, reading, updating, and deleting film data, making it an ideal solution for film cataloging applications.
+FilmApi is a robust and user-friendly API designed with the Fiber framework to manage and retrieve information about films. It offers a comprehensive set of endpoints for creating, reading, updating, and deleting film data, making it an ideal solution for film cataloging applications.
 
 ## Features
 
