@@ -1,34 +1,54 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/sirupsen/logrus"
 )
 
-type Films struct {
-	Id       int
-	Title    string
-	Year     int
-	FilmType string
+type Film struct {
+	Id       int    `json:"id"`
+	Title    string `json:"title"`
+	Year     int    `json:"year"`
+	FilmType string `json:"filmtype"`
 }
 
-var films = []Films{
-	{Id: 1, Title: "The Shawshank Redemption", Year: 1994, FilmType: "Drama"},
-	{Id: 2, Title: "The Godfather", Year: 1972, FilmType: "Crime"},
-	{Id: 3, Title: "The Dark Knight", Year: 2008, FilmType: "Action"},
-	{Id: 4, Title: "Nun", Year: 2018, FilmType: "Horror"},
-	{Id: 5, Title: "The Lord of the Rings: The Return of the King", Year: 2003, FilmType: "Fantasy"},
-}
-
+var db *pgxpool.Pool
 var logger = logrus.New()
 
+func connectDB() {
+	var err error
+	db, err = pgxpool.Connect(context.Background(), "postgres://postgres:2003@localhost:5432/filmdb")
+	if err != nil {
+		logger.WithField("error", err.Error()).Fatal("Unable to connect to database")
+	}
+	logger.Info("Connected to database")
+}
+
 func getFilms(c *fiber.Ctx) error {
-	logger.Info("Fetching all films")
+	rows, err := db.Query(context.Background(), "SELECT id, title, year, filmtype FROM films")
+	if err != nil {
+		logger.WithField("error", err.Error()).Error("Failed to fetch films")
+		return c.Status(http.StatusInternalServerError).SendString("Failed to fetch films")
+	}
+	defer rows.Close()
+
+	var films []Film
+	for rows.Next() {
+		var film Film
+		if err := rows.Scan(&film.Id, &film.Title, &film.Year, &film.FilmType); err != nil {
+			logger.WithField("error", err.Error()).Error("Failed to scan film")
+			return c.Status(http.StatusInternalServerError).SendString("Failed to fetch films")
+		}
+		films = append(films, film)
+	}
+
 	return c.JSON(films)
 }
 
@@ -36,29 +56,36 @@ func getFilmByID(c *fiber.Ctx) error {
 	id := c.Params("id")
 	intID, err := strconv.Atoi(id)
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err.Error(),
-			"id":    id,
-		}).Error("Invalid ID")
+		logger.WithField("error", err.Error()).Error("Invalid ID")
 		return c.Status(http.StatusBadRequest).SendString("Invalid ID")
 	}
-	for _, film := range films {
-		if film.Id == intID {
-			logger.WithField("id", intID).Info("Film found")
-			return c.JSON(film)
-		}
+
+	var film Film
+	err = db.QueryRow(context.Background(), "SELECT id, title, year, filmtype FROM films WHERE id=$1", intID).
+		Scan(&film.Id, &film.Title, &film.Year, &film.FilmType)
+	if err != nil {
+		logger.WithField("error", err.Error()).Warn("Film not found")
+		return c.Status(http.StatusNotFound).SendString("Film not found")
 	}
-	logger.WithField("id", intID).Warn("Film not found")
-	return c.Status(http.StatusNotFound).SendString("Film not found")
+
+	return c.JSON(film)
 }
 
 func addFilm(c *fiber.Ctx) error {
-	film := new(Films)
+	film := new(Film)
 	if err := c.BodyParser(film); err != nil {
 		logger.WithField("error", err.Error()).Error("Invalid film data")
-		return c.Status(http.StatusBadRequest).SendString("Invalid film")
+		return c.Status(http.StatusBadRequest).SendString("Invalid film data")
 	}
-	films = append(films, *film)
+
+	err := db.QueryRow(context.Background(),
+		"INSERT INTO films (title, year, filmtype) VALUES ($1, $2, $3) RETURNING id",
+		film.Title, film.Year, film.FilmType).Scan(&film.Id)
+	if err != nil {
+		logger.WithField("error", err.Error()).Error("Failed to add film")
+		return c.Status(http.StatusInternalServerError).SendString("Failed to add film")
+	}
+
 	logger.WithField("film", film).Info("Film added")
 	return c.JSON(film)
 }
@@ -67,54 +94,55 @@ func updateFilm(c *fiber.Ctx) error {
 	id := c.Params("id")
 	intID, err := strconv.Atoi(id)
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err.Error(),
-			"id":    id,
-		}).Error("Invalid ID")
+		logger.WithField("error", err.Error()).Error("Invalid ID")
 		return c.Status(http.StatusBadRequest).SendString("Invalid ID")
 	}
-	film := new(Films)
+
+	film := new(Film)
 	if err := c.BodyParser(film); err != nil {
 		logger.WithField("error", err.Error()).Error("Invalid film data")
-		return c.Status(http.StatusBadRequest).SendString("Invalid film")
+		return c.Status(http.StatusBadRequest).SendString("Invalid film data")
 	}
-	for i, f := range films {
-		if f.Id == intID {
-			films[i] = *film
-			logger.WithField("film", film).Info("Film updated")
-			return c.JSON(film)
-		}
+
+	commandTag, err := db.Exec(context.Background(),
+		"UPDATE films SET title=$1, year=$2, filmtype=$3 WHERE id=$4",
+		film.Title, film.Year, film.FilmType, intID)
+	if err != nil || commandTag.RowsAffected() == 0 {
+		logger.WithField("error", err.Error()).Warn("Film not found for update")
+		return c.Status(http.StatusNotFound).SendString("Film not found")
 	}
-	logger.WithField("id", intID).Warn("Film not found for update")
-	return c.Status(http.StatusNotFound).SendString("Film not found")
+
+	logger.WithField("film", film).Info("Film updated")
+	return c.JSON(film)
 }
 
 func deleteFilm(c *fiber.Ctx) error {
 	id := c.Params("id")
-	for i, film := range films {
-		intID, err := strconv.Atoi(id)
-		if err != nil {
-			logger.WithFields(logrus.Fields{
-				"error": err.Error(),
-				"id":    id,
-			}).Error("Invalid ID")
-			return c.Status(http.StatusBadRequest).SendString("Invalid ID")
-		}
-		if film.Id == intID {
-			films = append(films[:i], films[i+1:]...)
-			logger.WithField("id", intID).Info("Film deleted")
-			return c.SendString("Film is deleted")
-		}
+	intID, err := strconv.Atoi(id)
+	if err != nil {
+		logger.WithField("error", err.Error()).Error("Invalid ID")
+		return c.Status(http.StatusBadRequest).SendString("Invalid ID")
 	}
-	logger.WithField("id", id).Warn("Film not found for deletion")
-	return c.Status(http.StatusNotFound).SendString("Film not found")
+
+	commandTag, err := db.Exec(context.Background(), "DELETE FROM films WHERE id=$1", intID)
+	if err != nil || commandTag.RowsAffected() == 0 {
+		logger.WithField("error", err.Error()).Warn("Film not found for deletion")
+		return c.Status(http.StatusNotFound).SendString("Film not found")
+	}
+
+	logger.WithField("id", intID).Info("Film deleted")
+	return c.SendString("Film is deleted")
 }
 
 func main() {
+	connectDB()
+	defer db.Close()
+
 	app := fiber.New()
 
 	logger.SetFormatter(&logrus.JSONFormatter{})
 	logger.SetLevel(logrus.InfoLevel)
+
 	/*
 	using Sliding Window Rate Limiting instead of Fixed Window Rate Limiting
 	-> becauese it allows for a more flexible and responsive rate limiting strategy.
